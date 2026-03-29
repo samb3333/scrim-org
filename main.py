@@ -181,6 +181,11 @@ class ChooseServerView(discord.ui.View):
         if scrim_channel is None:
             print("Channel error")
             return
+        permissions = scrim_channel.permissions_for(guild.me)
+
+        if not permissions.send_messages:
+            print(f"No permission to send in {scrim_channel} in {scrims[self.id]['away']}")
+            return
 
         await scrim_channel.send(f"<@&{teams[scrims[self.id]['away']]['team_role']}> Server: {selected[0]}")
 
@@ -202,6 +207,11 @@ async def check_scrim():
                 if scrim_channel is None:
                     print("Channel error")
                     continue
+                permissions = scrim_channel.permissions_for(guild.me)
+
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {scrims[id]['home']}")
+                    continue
                 view = ChooseServerView(id)
                 await scrim_channel.send(f"Select a server <@&{teams[scrims[id]['home']]['team_role']}>", view=view)
                 updateScrim(id, {'server': True})
@@ -214,6 +224,11 @@ async def check_scrim():
                 if scrim_channel is None:
                     print("Channel error")
                     continue
+                permissions = scrim_channel.permissions_for(guild.me)
+
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {scrims[id]['home']}")
+                    continue
                 await scrim_channel.send("Cancelling :(")
 
                 guild = client.get_guild(int(scrims[id]['away']))
@@ -223,6 +238,11 @@ async def check_scrim():
                 scrim_channel = guild.get_channel(teams[scrims[id]['away']]['scrim_channel'])
                 if scrim_channel is None:
                     print("Channel error")
+                    continue
+                permissions = scrim_channel.permissions_for(guild.me)
+
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {scrims[id]['home']}")
                     continue
                 await scrim_channel.send("Cancelling :(")
                 deleteScrim(id)
@@ -235,6 +255,11 @@ async def check_scrim():
                 if scrim_channel is None:
                     print("Channel error")
                     continue
+                permissions = scrim_channel.permissions_for(guild.me)
+
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {scrims[id]['home']}")
+                    continue
                 await scrim_channel.send(f"Select a server above ^^^ <@&{teams[scrims[id]['home']]['team_role']}>")
 
                 guild = client.get_guild(int(scrims[id]['away']))
@@ -244,6 +269,11 @@ async def check_scrim():
                 scrim_channel = guild.get_channel(teams[scrims[id]['away']]['scrim_channel'])
                 if scrim_channel is None:
                     print("Channel error")
+                    continue
+                permissions = scrim_channel.permissions_for(guild.me)
+
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {scrims[id]['away']}")
                     continue
                 await scrim_channel.send(f"The other team isn't responding to set a server, try DM them or check ingame <@&{teams[scrims[id]['away']]['team_role']}>")
                 updateScrim(id, {'reminded': True})
@@ -259,7 +289,11 @@ async def check_scrim():
                 if scrim_channel is None:
                     print("Channel error")
                     continue
+                permissions = scrim_channel.permissions_for(guild.me)
 
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {org[id]['team']}")
+                    continue
                 await scrim_channel.send(f"Cancelling, you didn't choose a team to vs :(")
                 deleteOrg(id)
             elif timePassed(org[id]['time'], 15) == True and org[id].get('reminded', False) == False:
@@ -270,6 +304,11 @@ async def check_scrim():
                 scrim_channel = guild.get_channel(teams[org[id]['team']]['scrim_channel'])
                 if scrim_channel is None:
                     print("Channel error")
+                    continue
+                permissions = scrim_channel.permissions_for(guild.me)
+
+                if not permissions.send_messages:
+                    print(f"No permission to send in {scrim_channel} in {org[id]['team']}")
                     continue
                 await scrim_channel.send(f"Select a team to vs <@&{teams[org[id]['team']]['team_role']}>")
                 updateOrg(id, {'reminded': True})
@@ -361,6 +400,11 @@ class ChooseTeamView(discord.ui.View):
                 continue
             scrim_channel = guild.get_channel(teams[id]['scrim_channel'])
             if scrim_channel is None:
+                continue
+            permissions = scrim_channel.permissions_for(guild.me)
+
+            if not permissions.send_messages:
+                print(f"No permission to send in {scrim_channel} in {id}")
                 continue
             if id == team_id:
                 await scrim_channel.send(f"<@&{teams[id]['team_role']}> Confirmed {teams[org.get(self.id, {}).get('team')]['name']} at {timestamp(self.time, "t")} {timestamp(self.time, "R")}")
@@ -522,7 +566,17 @@ class TeamChoiceView(discord.ui.View):
         self.add_item(self.select)
 
     async def callback(self, interaction: discord.Interaction):
-        selected = self.select.values
+        selected = [
+            id for id in self.select.values
+            if str(id) != str(interaction.guild.id)
+        ]
+
+        if not selected:
+            await interaction.followup.send(
+                "You can't scrim your own team 😭",
+                ephemeral=True
+            )
+            return
 
         for child in self.children:
                 child.disabled = True
@@ -557,10 +611,15 @@ class TeamChoiceView(discord.ui.View):
             scrim_channel = guild.get_channel(teams[id]['scrim_channel'])
             if scrim_channel is None:
                 continue
+            permissions = scrim_channel.permissions_for(guild.me)
+
+            if not permissions.send_messages:
+                print(f"No permission to send in {scrim_channel} in {id}")
+                continue
             view = YesMaybeNoView(str(scrim_id), self.time, str(id), refreshView)
             await scrim_channel.send(content=f"<@&{teams[id]['team_role']}>", embed=view.get_message(), view=view)
 
-        msg = await interaction.followup.send(
+        msg = await interaction.channel.send(
             content=f"<@&{teams[str(interaction.guild.id)]['team_role']}>", embed=refreshView.get_message(), view=refreshView
         )
         refreshView.msg = msg
@@ -608,6 +667,6 @@ async def setup(interaction: discord.Interaction, team: str, scrim_channel: disc
         'scrim_channel': scrim_channel.id,
         'team_role': team_role.id
     })
-    await interaction.response.send_message(f'Setup complete for {team}!', ephemeral=True)
+    await interaction.response.send_message(f'Setup complete for {team}! Give me the team role or make sure I can view <#{scrim_channel.id}>', ephemeral=True)
 
 client.run(os.getenv('DISCORD_TOKEN'))
