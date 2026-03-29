@@ -294,7 +294,7 @@ async def check_scrim():
                 if not permissions.send_messages:
                     print(f"No permission to send in {scrim_channel} in {org[id]['team']}")
                     continue
-                await scrim_channel.send(f"Cancelling, you didn't choose a team to vs :(")
+                await scrim_channel.send(f"Cancelling, you didn't confirm a team to vs :(")
                 deleteOrg(id)
             elif timePassed(org[id]['time'], 15) == True and org[id].get('reminded', False) == False:
                 guild = client.get_guild(int(org[id]['team']))
@@ -310,7 +310,7 @@ async def check_scrim():
                 if not permissions.send_messages:
                     print(f"No permission to send in {scrim_channel} in {org[id]['team']}")
                     continue
-                await scrim_channel.send(f"Select a team to vs <@&{teams[org[id]['team']]['team_role']}>")
+                await scrim_channel.send(f"Confirm a team to vs above <@&{teams[org[id]['team']]['team_role']}>")
                 updateOrg(id, {'reminded': True})
 
         await asyncio.sleep(60)
@@ -344,7 +344,31 @@ def timestamp(time_str: str, style="t") -> str | None:
     unix_ts = int(target.timestamp())
     return f"<t:{unix_ts}:{style}>"
 
-class ChooseTeamView(discord.ui.View):
+class AreYouSureView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.result = None
+
+    async def disable_buttons(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.result = "confirm"
+        await self.disable_buttons(interaction)
+
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.result = "cancel"
+        await self.disable_buttons(interaction)
+
+        self.stop()
+
+class ConfirmTeamView(discord.ui.View):
     def __init__(self, scrim_id: str, time:str):
         super().__init__(timeout=None)
         self.id = scrim_id
@@ -355,10 +379,15 @@ class ChooseTeamView(discord.ui.View):
         teams = loadFile(teamsFile)
         options = [discord.SelectOption(label=teams.get(str(team_id)).get('name'), value=team_id) for team_id in loadFile(orgFile).get(scrim_id).get('teams')]
 
-        self.select = discord.ui.Select(options=options, placeholder='Choose the team to scrim', min_values=1, max_values=1)
+        self.select = discord.ui.Select(options=options, placeholder='Choose the team to confirm', min_values=1, max_values=1)
         self.select.callback = self.callback
 
         self.add_item(self.select)
+
+        cancel_button = discord.ui.Button(label='Cancel', style=discord.ButtonStyle.red, custom_id=f'cancel_{scrim_id}')
+        cancel_button.callback = self.cancel
+
+        self.add_item(cancel_button)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -381,7 +410,7 @@ class ChooseTeamView(discord.ui.View):
         if team_data.get(team_id, {}).get('yes', 0) < 4:
             await interaction.followup.send('Team does not have enough players', ephemeral=True)
             # Reset the dropdown by editing with a fresh view
-            new_view = ChooseTeamView(self.id, self.time)
+            new_view = ConfirmTeamView(self.id, self.time)
             await interaction.edit_original_response(view=new_view)
             return
 
@@ -420,6 +449,42 @@ class ChooseTeamView(discord.ui.View):
         })
         deleteOrg(self.id)
 
+    async def cancel(self, interaction: discord.Interaction):
+        view = AreYouSureView()
+        await interaction.response.send_message("Are you sure?", view=view, ephemeral=True)
+        await view.wait()
+
+        if view.result != "confirm":
+            await interaction.followup.send(content="Not cancelling scrim :)", ephemeral=True)
+            return
+        
+        await interaction.followup.send(content="Cancelling scrim :(")
+        teams = loadFile(teamsFile)
+
+        org = loadFile(orgFile)
+        team_data = org.get(self.id, {}).get('teams', {})
+
+        for id in team_data:
+            if id == str(interaction.guild_id):
+                continue
+            guild = client.get_guild(int(id))
+            if guild is None:
+                continue
+            scrim_channel = guild.get_channel(teams[id]['scrim_channel'])
+            if scrim_channel is None:
+                continue
+            permissions = scrim_channel.permissions_for(guild.me)
+
+            if not permissions.send_messages:
+                print(f"No permission to send in {scrim_channel} in {id}")
+                continue
+
+            await scrim_channel.send(f"{teams[org[self.id]['team']]['name']} cancelled the scrim :(")
+
+        deleteOrg(self.id)
+        self.stop()
+        return
+
     async def refresh(self):
         await self.msg.edit(embed=self.get_message(), view=self)
 
@@ -431,7 +496,6 @@ class ChooseTeamView(discord.ui.View):
         for id in org:
             message += f"{teams.get(id).get('name')}:"
             message += " ".join(["✅"] * org.get(id).get('yes', 0))
-            message += " ".join(["🤷‍♂️"] * org.get(id).get('maybe', 0))
             message += " ".join(["❌"] * org.get(id).get('no', 0))
             message += "\n"
 
@@ -442,7 +506,7 @@ class ChooseTeamView(discord.ui.View):
         )
         return embed
   
-class YesMaybeNoView(discord.ui.View):
+class YesNoView(discord.ui.View):
     def __init__(self, scrim_id: str, time:str, team: str, refreshView=None):
         super().__init__(timeout=None)
         self.id = scrim_id
@@ -454,19 +518,15 @@ class YesMaybeNoView(discord.ui.View):
         self.time = time
 
         self.yes_users = org.get(scrim_id, {}).get(team, {}).get('yes', [])
-        self.maybe_users = org.get(scrim_id, {}).get(team, {}).get('maybe', [])
         self.no_users = org.get(scrim_id, {}).get(team, {}).get('no', [])
 
         yes_button = discord.ui.Button(label='Yes', style=discord.ButtonStyle.green, custom_id=f'yes_{scrim_id}{team}')
-        maybe_button = discord.ui.Button(label='Maybe', style=discord.ButtonStyle.gray, custom_id=f'maybe_{scrim_id}{team}')
         no_button = discord.ui.Button(label='No', style=discord.ButtonStyle.red, custom_id=f'no_{scrim_id}{team}')
 
         yes_button.callback = self.yes
-        maybe_button.callback = self.maybe
         no_button.callback = self.no
 
         self.add_item(yes_button)
-        self.add_item(maybe_button)
         self.add_item(no_button)
 
     async def yes(self, interaction: discord.Interaction):
@@ -482,30 +542,9 @@ class YesMaybeNoView(discord.ui.View):
             await interaction.response.send_message(content='Already set to yes', ephemeral=True)
             return
         self.yes_users.append(interaction.user.id)
-        self.maybe_users.remove(interaction.user.id) if interaction.user.id in self.maybe_users else None
         self.no_users.remove(interaction.user.id) if interaction.user.id in self.no_users else None
         await interaction.message.edit(embed=self.get_message(), view=self)
         await interaction.response.send_message(content='Set to yes', ephemeral=True)
-        if self.refreshView:
-            await self.refreshView.refresh()
-
-    async def maybe(self, interaction: discord.Interaction):
-        org = loadFile(orgFile)
-        if self.id not in org:
-            for child in self.children:
-                child.disabled = True
-            await interaction.response.edit_message(view=self)
-            self.stop()
-            return
-        
-        if interaction.user.id in self.maybe_users:
-            await interaction.response.send_message(content='Already set to maybe', ephemeral=True)
-            return
-        self.maybe_users.append(interaction.user.id)
-        self.yes_users.remove(interaction.user.id) if interaction.user.id in self.yes_users else None
-        self.no_users.remove(interaction.user.id) if interaction.user.id in self.no_users else None
-        await interaction.message.edit(embed=self.get_message(), view=self)
-        await interaction.response.send_message(content='Set to maybe', ephemeral=True)
         if self.refreshView:
             await self.refreshView.refresh()
 
@@ -523,7 +562,6 @@ class YesMaybeNoView(discord.ui.View):
             return
         self.no_users.append(interaction.user.id)
         self.yes_users.remove(interaction.user.id) if interaction.user.id in self.yes_users else None
-        self.maybe_users.remove(interaction.user.id) if interaction.user.id in self.maybe_users else None
         await interaction.message.edit(embed=self.get_message(), view=self)
         await interaction.response.send_message(content='Set to no', ephemeral=True)
         if self.refreshView:
@@ -534,14 +572,12 @@ class YesMaybeNoView(discord.ui.View):
         teamsData = org.get(self.id, {}).get('teams', {})
         teamsData[self.team] = {
                     'yes': len(self.yes_users),
-                    'maybe': len(self.maybe_users),
                     'no': len(self.no_users)
                 }
         updateOrg(self.id, {'teams': teamsData})
 
         message = ''
         message += '✅: ' + ', '.join(f'<@{uid}>' for uid in self.yes_users) + '\n'
-        message += '🤷‍♂️: ' + ', '.join(f'<@{uid}>' for uid in self.maybe_users) + '\n'
         message += '❌: ' + ', '.join(f'<@{uid}>' for uid in self.no_users) + '\n'
 
         org = loadFile(orgFile)
@@ -572,7 +608,7 @@ class TeamChoiceView(discord.ui.View):
         ]
 
         if not selected:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "You can't scrim your own team 😭",
                 ephemeral=True
             )
@@ -588,7 +624,6 @@ class TeamChoiceView(discord.ui.View):
             if str(id) != str(interaction.guild.id):
                 teamsData[id] = {
                         'yes': 0,
-                        'maybe': 0,
                         'no': 0
                     }
 
@@ -599,7 +634,7 @@ class TeamChoiceView(discord.ui.View):
             'teams': teamsData
             })
         
-        refreshView = ChooseTeamView(str(scrim_id), self.time)
+        refreshView = ConfirmTeamView(str(scrim_id), self.time)
         teams = loadFile(teamsFile)
 
         for id in selected:
@@ -616,7 +651,7 @@ class TeamChoiceView(discord.ui.View):
             if not permissions.send_messages:
                 print(f"No permission to send in {scrim_channel} in {id}")
                 continue
-            view = YesMaybeNoView(str(scrim_id), self.time, str(id), refreshView)
+            view = YesNoView(str(scrim_id), self.time, str(id), refreshView)
             await scrim_channel.send(content=f"<@&{teams[id]['team_role']}>", embed=view.get_message(), view=view)
 
         msg = await interaction.channel.send(
