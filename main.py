@@ -36,6 +36,24 @@ client = MyClient()
 @client.event
 async def on_ready():
     client.loop.create_task(check_scrim())
+    org = loadFile(orgFile)
+        
+    for scrim_id, scrim_data in org.items():
+        time = scrim_data.get('time')
+        if not time:
+            continue
+
+        # Restore ConfirmTeamView
+        confirmView = ConfirmTeamView(scrim_id, time)
+        client.add_view(confirmView)
+
+        # Restore YesNoView for each team in this scrim
+        teams_data = scrim_data.get('teams', {})
+        for team_id in teams_data:
+            view = YesNoView(scrim_id, time, team_id, confirmView)
+            client.add_view(view)
+        
+
     print(f'Logged in as {client.user} (ID: {client.user.id})')
     print('------')
 
@@ -152,7 +170,7 @@ class ChooseServerView(discord.ui.View):
         servers = getServers()
         options = [discord.SelectOption(label=server, value=server) for server in servers]
 
-        self.select = discord.ui.Select(options=options, placeholder='Select server to go to', min_values=1, max_values=1)
+        self.select = discord.ui.Select(options=options, placeholder='Select server to go to', min_values=1, max_values=1, custom_id=f'choose_server_{scrim_id}')
         self.select.callback = self.callback
 
         self.add_item(self.select)
@@ -379,7 +397,7 @@ class ConfirmTeamView(discord.ui.View):
         teams = loadFile(teamsFile)
         options = [discord.SelectOption(label=teams.get(str(team_id)).get('name'), value=team_id) for team_id in loadFile(orgFile).get(scrim_id).get('teams')]
 
-        self.select = discord.ui.Select(options=options, placeholder='Choose the team to confirm', min_values=1, max_values=1)
+        self.select = discord.ui.Select(options=options, placeholder='Choose the team to confirm', min_values=1, max_values=1, custom_id=f'select_{scrim_id}')
         self.select.callback = self.callback
 
         self.add_item(self.select)
@@ -486,6 +504,25 @@ class ConfirmTeamView(discord.ui.View):
         return
 
     async def refresh(self):
+        if self.msg is None:
+            org = loadFile(orgFile)
+            teams = loadFile(teamsFile)
+            channel = client.get_channel(int(teams[org[self.id]['team']]['scrim_channel'])) or await client.fetch_channel(int(teams[org[self.id]['team']]['scrim_channel']))
+            if channel is None:
+                print("Channel error")
+                return
+            try:
+                self.msg = await channel.fetch_message(org[self.id]['message'])
+            except discord.NotFound:
+                print("Message deleted")
+                return
+            except discord.Forbidden:
+                print("Missing access to channel")
+                return
+            except discord.HTTPException:
+                print("Failed to fetch message")
+                return
+
         await self.msg.edit(embed=self.get_message(), view=self)
 
     def get_message(self):        
@@ -495,8 +532,8 @@ class ConfirmTeamView(discord.ui.View):
         message = ''
         for id in org:
             message += f"{teams.get(id).get('name')}:"
-            message += " ".join(["✅"] * org.get(id).get('yes', 0))
-            message += " ".join(["❌"] * org.get(id).get('no', 0))
+            message += " ".join(["✅"] * len(org.get(id).get('yes', 0)))
+            message += " ".join(["❌"] * len(org.get(id).get('no', 0)))
             message += "\n"
 
         embed = discord.Embed(
@@ -507,21 +544,21 @@ class ConfirmTeamView(discord.ui.View):
         return embed
   
 class YesNoView(discord.ui.View):
-    def __init__(self, scrim_id: str, time:str, team: str, refreshView=None):
+    def __init__(self, scrim_id: str, time:str, team: str, confirmView=None):
         super().__init__(timeout=None)
         self.id = scrim_id
-        self.refreshView = refreshView
+        self.confirmView = confirmView
         
         org = loadFile(orgFile)
 
         self.team = team
         self.time = time
 
-        self.yes_users = org.get(scrim_id, {}).get(team, {}).get('yes', [])
-        self.no_users = org.get(scrim_id, {}).get(team, {}).get('no', [])
+        self.yes_users = org[scrim_id][team]['yes']
+        self.no_users = org[scrim_id][team]['no']
 
-        yes_button = discord.ui.Button(label='Yes', style=discord.ButtonStyle.green, custom_id=f'yes_{scrim_id}{team}')
-        no_button = discord.ui.Button(label='No', style=discord.ButtonStyle.red, custom_id=f'no_{scrim_id}{team}')
+        yes_button = discord.ui.Button(label='Yes', style=discord.ButtonStyle.green, custom_id=f'yes_{scrim_id}_{team}')
+        no_button = discord.ui.Button(label='No', style=discord.ButtonStyle.red, custom_id=f'no_{scrim_id}_{team}')
 
         yes_button.callback = self.yes
         no_button.callback = self.no
@@ -545,8 +582,8 @@ class YesNoView(discord.ui.View):
         self.no_users.remove(interaction.user.id) if interaction.user.id in self.no_users else None
         await interaction.message.edit(embed=self.get_message(), view=self)
         await interaction.response.send_message(content='Set to yes', ephemeral=True)
-        if self.refreshView:
-            await self.refreshView.refresh()
+        if self.confirmView:
+            await self.confirmView.refresh()
 
     async def no(self, interaction: discord.Interaction):
         org = loadFile(orgFile)
@@ -564,15 +601,15 @@ class YesNoView(discord.ui.View):
         self.yes_users.remove(interaction.user.id) if interaction.user.id in self.yes_users else None
         await interaction.message.edit(embed=self.get_message(), view=self)
         await interaction.response.send_message(content='Set to no', ephemeral=True)
-        if self.refreshView:
-            await self.refreshView.refresh()
+        if self.confirmView:
+            await self.confirmView.refresh()
 
     def get_message(self):
         org = loadFile(orgFile)
         teamsData = org.get(self.id, {}).get('teams', {})
         teamsData[self.team] = {
-                    'yes': len(self.yes_users),
-                    'no': len(self.no_users)
+                    'yes': self.yes_users,
+                    'no': self.no_users
                 }
         updateOrg(self.id, {'teams': teamsData})
 
@@ -623,18 +660,19 @@ class TeamChoiceView(discord.ui.View):
         for id in selected:
             if str(id) != str(interaction.guild.id):
                 teamsData[id] = {
-                        'yes': 0,
-                        'no': 0
+                        'yes': [],
+                        'no': []
                     }
 
         updateOrg(scrim_id, {
             'team': str(interaction.guild.id),
+            'message': None,
             'time': self.time,
             'reminded': False,
             'teams': teamsData
             })
-        
-        refreshView = ConfirmTeamView(str(scrim_id), self.time)
+
+        confirmView = ConfirmTeamView(str(scrim_id), self.time)
         teams = loadFile(teamsFile)
 
         for id in selected:
@@ -651,13 +689,16 @@ class TeamChoiceView(discord.ui.View):
             if not permissions.send_messages:
                 print(f"No permission to send in {scrim_channel} in {id}")
                 continue
-            view = YesNoView(str(scrim_id), self.time, str(id), refreshView)
+            view = YesNoView(str(scrim_id), self.time, str(id), confirmView)
             await scrim_channel.send(content=f"<@&{teams[id]['team_role']}>", embed=view.get_message(), view=view)
 
         msg = await interaction.channel.send(
-            content=f"<@&{teams[str(interaction.guild.id)]['team_role']}>", embed=refreshView.get_message(), view=refreshView
+            content=f"<@&{teams[str(interaction.guild.id)]['team_role']}>", embed=confirmView.get_message(), view=confirmView
         )
-        refreshView.msg = msg
+        confirmView.msg = msg
+        updateOrg(scrim_id, {
+            'message': msg.id
+        })
 
 @client.tree.command(name='scrim', description='Setup a scrim')
 @discord.app_commands.describe(time='Time (18:00)')
@@ -670,6 +711,12 @@ async def scrim(interaction: discord.Interaction, time: str):
     scrimChannelID = teams[str(interaction.guild_id)]['scrim_channel']
     if interaction.channel_id != scrimChannelID:
         await interaction.response.send_message(f'Go to <#{scrimChannelID}>', ephemeral=True)
+        return
+
+    guild = interaction.guild
+    permissions = interaction.channel.permissions_for(guild.me)
+    if not permissions.send_messages:
+        await interaction.response.send_message(f'I cannot send messages in this channel, Enable the permission on the channel', ephemeral=True)
         return
     
     try:
@@ -692,6 +739,9 @@ async def scrim(interaction: discord.Interaction, time: str):
 @client.tree.command(name='setup', description='Setup the bot in your server')
 @discord.app_commands.describe(team='Team name', scrim_channel='Private channel for scrims', team_role='Role for team members')
 async def setup(interaction: discord.Interaction, team: str, scrim_channel: discord.TextChannel, team_role: discord.Role):
+    if str(interaction.guild.id) not in loadFile("whitelist.json", []):
+        await interaction.response.send_message("DM Samzy to whitelist your team", ephemeral=True)
+        return
     teams = loadFile(teamsFile)
     for key in teams.keys():
         if teams[key]['name'] == team and key != str(interaction.guild.id):
